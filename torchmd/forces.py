@@ -21,7 +21,7 @@ class Forces:
 
     # 1-4 is nonbonded but we put it currently in bonded to not calculate all distances
     bonded = ["bonds", "angles", "dihedrals", "impropers", "1-4"]
-    nonbonded = ["electrostatics", "lj", "repulsion", "repulsioncg"]
+    nonbonded = ["electrostatics", "lj", "repulsion", "repulsioncg","repulsionrna"]
     terms = bonded + nonbonded
 
     def __init__(
@@ -38,7 +38,7 @@ class Forces:
         self.par = parameters
         if terms is None:
             raise RuntimeError(
-                'Set force terms or leave empty brackets [].\nAvailable options: "bonds", "angles", "dihedrals", "impropers", "1-4", "electrostatics", "lj", "repulsion", "repulsioncg".'
+                'Set force terms or leave empty brackets [].\nAvailable options: "bonds", "angles", "dihedrals", "impropers", "1-4", "electrostatics", "lj", "repulsion", "repulsioncg","repulsionrna".'
             )
 
         self.energies = [ene.lower() for ene in terms]
@@ -80,6 +80,7 @@ class Forces:
             )
 
         nsystems = pos.shape[0]
+        # print('pos',pos)
         if torch.any(torch.isnan(pos)):
             raise RuntimeError("Found NaN coordinates.")
 
@@ -115,12 +116,19 @@ class Forces:
                         bond_dist, (bond_dist, bond_unitvec, pairs, bond_params)
                     )
                 E, force_coeff = evaluate_bonds(bond_dist, bond_params, explicit_forces)
-
+                # print('spos', spos)
+                # print('pairs', pairs)
+                # print('bond_dist', bond_dist)
+                # print('bond_unitvec', bond_unitvec)
+                # print('bond_params', bond_params)
+                
                 pot[i]["bonds"] += E.sum()
                 if explicit_forces:
                     forcevec = bond_unitvec * force_coeff[:, None]
                     forces[i].index_add_(0, pairs[:, 0], -forcevec)
                     forces[i].index_add_(0, pairs[:, 1], forcevec)
+
+            # print('bond_force=',forces) 
 
             if "angles" in self.energies and self.par.angles is not None:
                 _, _, r21 = calculate_distances(spos, self.par.angles[:, [0, 1]], sbox)
@@ -298,6 +306,17 @@ class Forces:
                             explicit_forces,
                         )
                         pot[i][v] += E.sum()
+                    elif v == "repulsionrna":
+                        E, force_coeff = evaluate_repulsion_RNA(
+                            nb_dist,
+                            self.par.S,
+                            ava_idx,
+                            self.par.mapped_atom_types,
+                            self.par.A,
+                            self.par.B,
+                            explicit_forces,
+                        )
+                        pot[i][v] += E.sum()
                     else:
                         continue
 
@@ -312,7 +331,10 @@ class Forces:
                 pot[s]["external"] += ext_ene[s]
             if explicit_forces:
                 forces += ext_force
-
+            # print('ext_force=', ext_force)
+            # print(np.shape(ext_force))
+            # print('total_forces=', forces)
+            
         if not explicit_forces:
             enesum = torch.zeros(1, device=pos.device, dtype=pos.dtype)
             for i in range(nsystems):
@@ -436,6 +458,35 @@ def evaluate_repulsion_CG(
         force = (-6 * coef * rinv6) * rinv1 / scale
     return pot, force
 
+def evaluate_repulsion_RNA(
+    dist, S, pair_indeces, atom_types, A, B, scale=1, explicit_forces = True
+):
+    force = None
+
+    atomtype_indices = atom_types[pair_indeces]
+
+    aa = A[atomtype_indices[:, 0], atomtype_indices[:, 1]]                            
+    bb = B[atomtype_indices[:, 0], atomtype_indices[:, 1]]
+    sig = S[atomtype_indices[:, 0], atomtype_indices[:, 1]]
+
+    rinv1 = 1 / dist
+    rinv6 = rinv1**6
+    rinv12 = rinv6*rinv6
+
+    pot = (aa * rinv12 - 2 * bb * rinv6 + 1) / scale
+
+    pot = torch.where(sig < dist, 0., pot)
+
+    if explicit_forces:
+        force = (-12 * aa * rinv12 * rinv1 + 12 * bb * rinv6 * rinv1) / scale
+
+        force = torch.where(sig < dist, 0., force)
+
+    # print('force=',force)
+    # print('pot',pot)
+
+    return pot, force
+    
 
 def evaluate_electrostatics(
     dist,

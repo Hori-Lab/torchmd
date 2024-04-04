@@ -14,6 +14,7 @@ class Parameters:
     ):
         self.A = None
         self.B = None
+        self.S =None
         self.bonds = None
         self.bond_params = None
         self.charges = None
@@ -123,6 +124,8 @@ class Parameters:
             )
         if any(elem in terms for elem in ["lj", "repulsioncg", "repulsion"]):
             self.A, self.B = self.make_lj(ff, uqatomtypes)
+        if "repulsionrna" in terms:
+            self.A, self.B, self.S = self.make_lj_RNA(ff, uqatomtypes)
         if "bonds" in terms and len(mol.bonds):
             uqbonds = np.unique([sorted(bb) for bb in mol.bonds], axis=0)
             self.bonds = torch.tensor(uqbonds.astype(np.int64))
@@ -183,6 +186,24 @@ class Parameters:
         A = torch.tensor(A)
         B = torch.tensor(B)
         return A, B
+        
+    def make_lj_RNA(self, ff, uqatomtypes):
+        sigma = []
+        epsilon = []
+        for at in uqatomtypes:
+            ss, ee = ff.get_LJ(at)
+            sigma.append(ss)
+            epsilon.append(ee)
+
+        sigma = np.array(sigma, dtype=np.float64)
+        epsilon = np.array(epsilon, dtype=np.float64)
+
+        A, B, S = calculate_AB_sigma(sigma, epsilon)
+        A = torch.tensor(A)
+        B = torch.tensor(B)
+        S = torch.tensor(S)
+
+        return A,B,S
 
     def make_bonds(self, ff, uqbondatomtypes):
         return torch.tensor([ff.get_bond(*at) for at in uqbondatomtypes])
@@ -258,6 +279,16 @@ def calculate_AB(sigma, epsilon):
     del sigma_table_12, sigma_table_6, eps_table, sigma_table
     return A, B
 
+def calculate_AB_sigma(sigma, epsilon):
+    # Lorentz - Berthelot combination rule
+    sigma_table = 0.5 * (sigma + sigma[:, None])
+    eps_table = np.sqrt(epsilon * epsilon[:, None])
+    sigma_table_6 = sigma_table**6
+    sigma_table_12 = sigma_table_6 * sigma_table_6
+    A = eps_table * 4 * sigma_table_12
+    B = eps_table * 4 * sigma_table_6
+    del sigma_table_12, sigma_table_6, eps_table
+    return A, B, sigma_table
 
 def detect_improper_center(indexes, graph):
     for i in indexes:

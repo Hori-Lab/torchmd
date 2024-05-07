@@ -44,6 +44,8 @@ class Parameters:
             self.A = self.A.to(device)
         if self.B is not None:
             self.B = self.B.to(device)
+        if self.S is not None:
+            self.S = self.S.to(device)
         if self.bonds is not None:
             self.bonds = self.bonds.to(device)
             self.bond_params = self.bond_params.to(device)
@@ -75,6 +77,8 @@ class Parameters:
             self.A = self.A.type(precision)
         if self.B is not None:
             self.B = self.B.type(precision)
+        if self.S is not None:
+            self.S = self.S.type(precision)
         if self.bonds is not None:
             self.bond_params = self.bond_params.type(precision)
         if self.angles is not None:

@@ -41,6 +41,15 @@ class Forces:
                 'Set force terms or leave empty brackets [].\nAvailable options: "bonds", "angles", "dihedrals", "impropers", "1-4", "electrostatics", "lj", "repulsion", "repulsioncg","repulsionrna".'
             )
 
+        # Precalculate A, B arrays for nonbonded terms
+        if self.par.nonbonded_params is not None and "repulsionrna" in terms:
+            self.par.A, self.par.B, self.par.S = self.par.get_ABS()
+        elif self.par.nonbonded_params is not None and "lj" in terms:
+            self.par.A, self.par.B = self.par.get_AB()
+
+        # if self.par.nonbonded_14_params is not None and "lj" in terms:
+        #     self.par.A14, self.par.B14 = self.par.get_AB_14()
+
         self.energies = [ene.lower() for ene in terms]
         for et in self.energies:
             if et not in Forces.terms:
@@ -73,14 +82,24 @@ class Forces:
             indexedarrays.append(arr[under_cutoff])
         return indexedarrays
 
-    def compute(self, pos, box, forces, returnDetails=False, explicit_forces=True):
+    def compute(
+        self,
+        pos,
+        box,
+        forces,
+        returnDetails=False,
+        explicit_forces=True,
+        toNumpy=True,
+        calculateForces=True,
+    ):
         if not explicit_forces and not pos.requires_grad:
             raise RuntimeError(
                 "The positions passed don't require gradients. Please use pos.detach().requires_grad_(True) before passing."
             )
+        if not calculateForces:
+            explicit_forces = False
 
         nsystems = pos.shape[0]
-        # print('pos',pos)
         if torch.any(torch.isnan(pos)):
             raise RuntimeError("Found NaN coordinates.")
 
@@ -93,19 +112,21 @@ class Forces:
             pp["external"] = torch.zeros(1, device=pos.device).type(pos.dtype)
             pot.append(pp)
 
-        forces.zero_()
+        if forces is not None:
+            forces.zero_()
+
         for i in range(nsystems):
             spos = pos[i]
             sbox = box[i][torch.eye(3).bool()]  # Use only the diagonal
 
             # Bonded terms
             # TODO: We are for sure doing duplicate distance calculations here!
-            if "bonds" in self.energies and self.par.bonds is not None:
-                bond_dist, bond_unitvec, _ = calculate_distances(
-                    spos, self.par.bonds, sbox
-                )
-                pairs = self.par.bonds
-                bond_params = self.par.bond_params
+            if "bonds" in self.energies and self.par.bond_params is not None:
+                pairs = self.par.bond_params["idx"]
+                param_idx = self.par.bond_params["map"][:, 1]
+                bond_dist, bond_unitvec, _ = calculate_distances(spos, pairs, sbox)
+
+                bond_params = self.par.bond_params["params"][param_idx]
                 if self.cutoff is not None:
                     (
                         bond_dist,
@@ -128,55 +149,52 @@ class Forces:
                     forces[i].index_add_(0, pairs[:, 0], -forcevec)
                     forces[i].index_add_(0, pairs[:, 1], forcevec)
 
-            # print('bond_force=',forces) 
-
-            if "angles" in self.energies and self.par.angles is not None:
-                _, _, r21 = calculate_distances(spos, self.par.angles[:, [0, 1]], sbox)
-                _, _, r23 = calculate_distances(spos, self.par.angles[:, [2, 1]], sbox)
+            if "angles" in self.energies and self.par.angle_params is not None:
+                angle_idx = self.par.angle_params["idx"]
+                param_idx = self.par.angle_params["map"][:, 1]
+                _, _, r21 = calculate_distances(spos, angle_idx[:, [0, 1]], sbox)
+                _, _, r23 = calculate_distances(spos, angle_idx[:, [2, 1]], sbox)
                 E, angle_forces = evaluate_angles(
-                    r21, r23, self.par.angle_params, explicit_forces
+                    r21,
+                    r23,
+                    self.par.angle_params["params"][param_idx],
+                    explicit_forces,
                 )
 
                 pot[i]["angles"] += E.sum()
                 if explicit_forces:
-                    forces[i].index_add_(0, self.par.angles[:, 0], angle_forces[0])
-                    forces[i].index_add_(0, self.par.angles[:, 1], angle_forces[1])
-                    forces[i].index_add_(0, self.par.angles[:, 2], angle_forces[2])
+                    forces[i].index_add_(0, angle_idx[:, 0], angle_forces[0])
+                    forces[i].index_add_(0, angle_idx[:, 1], angle_forces[1])
+                    forces[i].index_add_(0, angle_idx[:, 2], angle_forces[2])
 
-            if "dihedrals" in self.energies and self.par.dihedrals is not None:
-                _, _, r12 = calculate_distances(
-                    spos, self.par.dihedrals[:, [0, 1]], sbox
-                )
-                _, _, r23 = calculate_distances(
-                    spos, self.par.dihedrals[:, [1, 2]], sbox
-                )
-                _, _, r34 = calculate_distances(
-                    spos, self.par.dihedrals[:, [2, 3]], sbox
-                )
+            if "dihedrals" in self.energies and self.par.dihedral_params is not None:
+                dihed_idx = self.par.dihedral_params["idx"]
+                param_idx = self.par.dihedral_params["map"][:, 1]
+                _, _, r12 = calculate_distances(spos, dihed_idx[:, [0, 1]], sbox)
+                _, _, r23 = calculate_distances(spos, dihed_idx[:, [1, 2]], sbox)
+                _, _, r34 = calculate_distances(spos, dihed_idx[:, [2, 3]], sbox)
                 E, dihedral_forces = evaluate_torsion(
-                    r12, r23, r34, self.par.dihedral_params, explicit_forces
+                    r12,
+                    r23,
+                    r34,
+                    self.par.dihedral_params["map"][:, 0],
+                    self.par.dihedral_params["params"][param_idx],
+                    explicit_forces,
                 )
 
                 pot[i]["dihedrals"] += E.sum()
                 if explicit_forces:
-                    forces[i].index_add_(
-                        0, self.par.dihedrals[:, 0], dihedral_forces[0]
-                    )
-                    forces[i].index_add_(
-                        0, self.par.dihedrals[:, 1], dihedral_forces[1]
-                    )
-                    forces[i].index_add_(
-                        0, self.par.dihedrals[:, 2], dihedral_forces[2]
-                    )
-                    forces[i].index_add_(
-                        0, self.par.dihedrals[:, 3], dihedral_forces[3]
-                    )
+                    forces[i].index_add_(0, dihed_idx[:, 0], dihedral_forces[0])
+                    forces[i].index_add_(0, dihed_idx[:, 1], dihedral_forces[1])
+                    forces[i].index_add_(0, dihed_idx[:, 2], dihedral_forces[2])
+                    forces[i].index_add_(0, dihed_idx[:, 3], dihedral_forces[3])
 
-            if "1-4" in self.energies and self.par.idx14 is not None:
-                nb_dist, nb_unitvec, _ = calculate_distances(spos, self.par.idx14, sbox)
+            if "1-4" in self.energies and self.par.nonbonded_14_params is not None:
+                idx14 = self.par.nonbonded_14_params["idx"]
+                nb_dist, nb_unitvec, _ = calculate_distances(spos, idx14, sbox)
 
-                nonbonded_14_params = self.par.nonbonded_14_params
-                idx14 = self.par.idx14
+                nonbonded_14_params = self.par.nonbonded_14_params["params"]
+
                 # if self.cutoff is not None:
                 #     (
                 #         nb_dist,
@@ -192,11 +210,11 @@ class Forces:
                 #             self.par.idx14,
                 #         ),
                 #     )
-
-                aa = nonbonded_14_params[:, 0]
-                bb = nonbonded_14_params[:, 1]
-                scnb = nonbonded_14_params[:, 2]
-                scee = nonbonded_14_params[:, 3]
+                prm_idx = self.par.nonbonded_14_params["map"][:, 1]
+                aa = nonbonded_14_params[prm_idx, 0]
+                bb = nonbonded_14_params[prm_idx, 1]
+                scnb = nonbonded_14_params[prm_idx, 2]
+                scee = nonbonded_14_params[prm_idx, 3]
 
                 if "lj" in self.energies:
                     E, force_coeff = evaluate_LJ_internal(
@@ -224,34 +242,27 @@ class Forces:
                         forces[i].index_add_(0, idx14[:, 0], -forcevec)
                         forces[i].index_add_(0, idx14[:, 1], forcevec)
 
-            if "impropers" in self.energies and self.par.impropers is not None:
-                _, _, r12 = calculate_distances(
-                    spos, self.par.impropers[:, [0, 1]], sbox
-                )
-                _, _, r23 = calculate_distances(
-                    spos, self.par.impropers[:, [1, 2]], sbox
-                )
-                _, _, r34 = calculate_distances(
-                    spos, self.par.impropers[:, [2, 3]], sbox
-                )
+            if "impropers" in self.energies and self.par.improper_params is not None:
+                impr_idx = self.par.improper_params["idx"]
+                param_idx = self.par.improper_params["map"][:, 1]
+                _, _, r12 = calculate_distances(spos, impr_idx[:, [0, 1]], sbox)
+                _, _, r23 = calculate_distances(spos, impr_idx[:, [1, 2]], sbox)
+                _, _, r34 = calculate_distances(spos, impr_idx[:, [2, 3]], sbox)
                 E, improper_forces = evaluate_torsion(
-                    r12, r23, r34, self.par.improper_params, explicit_forces
+                    r12,
+                    r23,
+                    r34,
+                    self.par.improper_params["map"][:, 0],
+                    self.par.improper_params["params"][param_idx],
+                    explicit_forces,
                 )
 
                 pot[i]["impropers"] += E.sum()
                 if explicit_forces:
-                    forces[i].index_add_(
-                        0, self.par.impropers[:, 0], improper_forces[0]
-                    )
-                    forces[i].index_add_(
-                        0, self.par.impropers[:, 1], improper_forces[1]
-                    )
-                    forces[i].index_add_(
-                        0, self.par.impropers[:, 2], improper_forces[2]
-                    )
-                    forces[i].index_add_(
-                        0, self.par.impropers[:, 3], improper_forces[3]
-                    )
+                    forces[i].index_add_(0, impr_idx[:, 0], improper_forces[0])
+                    forces[i].index_add_(0, impr_idx[:, 1], improper_forces[1])
+                    forces[i].index_add_(0, impr_idx[:, 2], improper_forces[2])
+                    forces[i].index_add_(0, impr_idx[:, 3], improper_forces[3])
 
             # Non-bonded terms
             if self.require_distances and len(self.ava_idx):
@@ -309,11 +320,11 @@ class Forces:
                     elif v == "repulsionrna":
                         E, force_coeff = evaluate_repulsion_RNA(
                             nb_dist,
-                            self.par.S,
                             ava_idx,
                             self.par.mapped_atom_types,
                             self.par.A,
                             self.par.B,
+                            self.par.S,
                             explicit_forces,
                         )
                         pot[i][v] += E.sum()
@@ -331,11 +342,8 @@ class Forces:
                 pot[s]["external"] += ext_ene[s]
             if explicit_forces:
                 forces += ext_force
-            # print('ext_force=', ext_force)
-            # print(np.shape(ext_force))
-            # print('total_forces=', forces)
-            
-        if not explicit_forces:
+
+        if not explicit_forces and calculateForces:
             enesum = torch.zeros(1, device=pos.device, dtype=pos.dtype)
             for i in range(nsystems):
                 for ene in pot[i]:
@@ -344,15 +352,16 @@ class Forces:
             forces[:] = -torch.autograd.grad(
                 enesum, pos, only_inputs=True, retain_graph=True
             )[0]
-            if returnDetails:
-                return pot
-            else:
-                return [torch.sum(torch.cat(list(pp.values()))) for pp in pot]
 
-        if returnDetails:
-            return [{k: v.cpu().item() for k, v in pp.items()} for pp in pot]
-        else:
-            return [np.sum([v.cpu().item() for _, v in pp.items()]) for pp in pot]
+        if not returnDetails:
+            pot = torch.stack([torch.sum(torch.cat(list(pp.values()))) for pp in pot])
+
+        if toNumpy:
+            if returnDetails:
+                return [{k: v.cpu().item() for k, v in pp.items()} for pp in pot]
+            else:
+                return [pp.cpu().item() for pp in pot]
+        return pot
 
     def _make_indeces(self, natoms, excludepairs, device):
         fullmat = np.full((natoms, natoms), True, dtype=bool)
@@ -459,7 +468,7 @@ def evaluate_repulsion_CG(
     return pot, force
 
 def evaluate_repulsion_RNA(
-    dist, S, pair_indeces, atom_types, A, B, scale=1, explicit_forces = True
+    dist, pair_indeces, atom_types, A, B, S, scale=1, explicit_forces=True
 ):
     force = None
 
@@ -474,19 +483,13 @@ def evaluate_repulsion_RNA(
     rinv12 = rinv6*rinv6
 
     pot = (aa * rinv12 - 2 * bb * rinv6 + 1) / scale
-
     pot = torch.where(sig < dist, 0., pot)
 
     if explicit_forces:
         force = (-12 * aa * rinv12 * rinv1 + 12 * bb * rinv6 * rinv1) / scale
-
         force = torch.where(sig < dist, 0., force)
 
-    # print('force=',force)
-    # print('pot',pot)
-
     return pot, force
-    
 
 def evaluate_electrostatics(
     dist,
@@ -577,7 +580,7 @@ def evaluate_angles(r21, r23, angle_params, explicit_forces=True):
     return pot, (force0, force1, force2)
 
 
-def evaluate_torsion(r12, r23, r34, torsion_params, explicit_forces=True):
+def evaluate_torsion(r12, r23, r34, dih_idx, torsion_params, explicit_forces=True):
     # Calculate dihedral angles from vectors
     crossA = torch.cross(r12, r23, dim=1)
     crossB = torch.cross(r23, r34, dim=1)
@@ -590,30 +593,29 @@ def evaluate_torsion(r12, r23, r34, torsion_params, explicit_forces=True):
     sinPhi = torch.sum(crossC * normcrossB, dim=1) / normC
     phi = -torch.atan2(sinPhi, cosPhi)
 
-    ntorsions = len(torsion_params[0]["idx"])
+    ntorsions = r12.shape[0]
     pot = torch.zeros(ntorsions, dtype=r12.dtype, layout=r12.layout, device=r12.device)
     if explicit_forces:
         coeff = torch.zeros(
             ntorsions, dtype=r12.dtype, layout=r12.layout, device=r12.device
         )
-    for i in range(0, len(torsion_params)):
-        idx = torsion_params[i]["idx"]
-        k0 = torsion_params[i]["params"][:, 0]
-        phi0 = torsion_params[i]["params"][:, 1]
-        per = torsion_params[i]["params"][:, 2]
 
-        if torch.all(per > 0):  # AMBER torsions
-            angleDiff = per * phi[idx] - phi0
-            pot.scatter_add_(0, idx, k0 * (1 + torch.cos(angleDiff)))
-            if explicit_forces:
-                coeff.scatter_add_(0, idx, -per * k0 * torch.sin(angleDiff))
-        else:  # CHARMM torsions
-            angleDiff = phi[idx] - phi0
-            angleDiff[angleDiff < -pi] = angleDiff[angleDiff < -pi] + 2 * pi
-            angleDiff[angleDiff > pi] = angleDiff[angleDiff > pi] - 2 * pi
-            pot.scatter_add_(0, idx, k0 * angleDiff**2)
-            if explicit_forces:
-                coeff.scatter_add_(0, idx, 2 * k0 * angleDiff)
+    k0 = torsion_params[:, 0]
+    phi0 = torsion_params[:, 1]
+    per = torsion_params[:, 2]
+
+    if torch.all(per > 0):  # AMBER torsions
+        angleDiff = per * phi[dih_idx] - phi0
+        pot.scatter_add_(0, dih_idx, k0 * (1 + torch.cos(angleDiff)))
+        if explicit_forces:
+            coeff.scatter_add_(0, dih_idx, -per * k0 * torch.sin(angleDiff))
+    else:  # CHARMM torsions
+        angleDiff = phi[dih_idx] - phi0
+        angleDiff[angleDiff < -pi] = angleDiff[angleDiff < -pi] + 2 * pi
+        angleDiff[angleDiff > pi] = angleDiff[angleDiff > pi] - 2 * pi
+        pot.scatter_add_(0, dih_idx, k0 * angleDiff**2)
+        if explicit_forces:
+            coeff.scatter_add_(0, dih_idx, 2 * k0 * angleDiff)
 
     # coeff.unsqueeze_(1)
 

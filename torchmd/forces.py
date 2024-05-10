@@ -20,7 +20,7 @@ class Forces:
     """
 
     # 1-4 is nonbonded but we put it currently in bonded to not calculate all distances
-    bonded = ["bonds", "angles", "dihedrals", "impropers", "1-4"]
+    bonded = ["bonds", "angles", "dihedrals","dihedrals_rna","impropers", "1-4"]
     nonbonded = ["electrostatics", "lj", "repulsion", "repulsioncg","repulsionrna"]
     terms = bonded + nonbonded
 
@@ -174,6 +174,28 @@ class Forces:
                 _, _, r23 = calculate_distances(spos, dihed_idx[:, [1, 2]], sbox)
                 _, _, r34 = calculate_distances(spos, dihed_idx[:, [2, 3]], sbox)
                 E, dihedral_forces = evaluate_torsion(
+                    r12,
+                    r23,
+                    r34,
+                    self.par.dihedral_params["map"][:, 0],
+                    self.par.dihedral_params["params"][param_idx],
+                    explicit_forces,
+                )
+
+                pot[i]["dihedrals"] += E.sum()
+                if explicit_forces:
+                    forces[i].index_add_(0, dihed_idx[:, 0], dihedral_forces[0])
+                    forces[i].index_add_(0, dihed_idx[:, 1], dihedral_forces[1])
+                    forces[i].index_add_(0, dihed_idx[:, 2], dihedral_forces[2])
+                    forces[i].index_add_(0, dihed_idx[:, 3], dihedral_forces[3])
+
+            if "dihedrals_rna" in self.energies and self.par.dihedral_params is not None:
+                dihed_idx = self.par.dihedral_params["idx"]
+                param_idx = self.par.dihedral_params["map"][:, 1]
+                _, _, r12 = calculate_distances(spos, dihed_idx[:, [0, 1]], sbox)
+                _, _, r23 = calculate_distances(spos, dihed_idx[:, [1, 2]], sbox)
+                _, _, r34 = calculate_distances(spos, dihed_idx[:, [2, 3]], sbox)
+                E, dihedral_forces = evaluate_torsion_rna(
                     r12,
                     r23,
                     r34,
@@ -578,6 +600,51 @@ def evaluate_angles(r21, r23, angle_params, explicit_forces=True):
         force1 = -(force0 + force2)
 
     return pot, (force0, force1, force2)
+
+def evaluate_torsion_rna(r12,r23,r34,torsion_params,explicit_forces=True):
+    # Calculate dihedral angles from vectors
+    crossA = torch.cross(r12, r23, dim=1)
+    crossB = torch.cross(r23, r34, dim=1)
+    crossC = torch.cross(r23, crossA, dim=1)
+    normA = torch.norm(crossA, dim=1)
+    normB = torch.norm(crossB, dim=1)
+    normC = torch.norm(crossC, dim=1)
+    normcrossB = crossB / normB.unsqueeze(1)
+    cosPhi = torch.sum(crossA * normcrossB, dim=1) / normA
+    sinPhi = torch.sum(crossC * normcrossB, dim=1) / normC
+    phi = -torch.atan2(sinPhi, cosPhi)
+   
+    ntorsions = len(torsion_params[0]["idx"])
+    pot = torch.zeros(ntorsions, dtype=r12.dtype, layout=r12.layout, device=r12.device)
+    if explicit_forces:
+        coeff = torch.zeros(
+            ntorsions, dtype=r12.dtype, layout=r12.layout, device=r12.device
+        )
+        
+    for i in range(0, len(torsion_params)):
+        idx = torsion_params[i]["idx"]
+        k_phi = torsion_params[i]["params"][:, 0]
+        phi0 = torsion_params[i]["params"][:, 1]
+        w = torsion_params[i]["params"][:, 2]
+        
+    angleDiff = phi[idx] - phi0
+    pot.scatter_add_(0, idx, -k_phi * (torch.exp(-0.5 * w * (angleDiff)**2)))
+
+    force0, force1, force2, force3 = None, None, None, None
+    if explicit_forces:
+        coeff.scatter_add_(0, idx, k_phi * w * (anglediff) * torch.exp(-0.5 * w * (anglediff)**2))
+        norm_r23_sq = torch.norm(r23, dim =1)**2
+
+
+        force0 = - coeff * r23 * (crossA/normA**2)
+
+        force3 = coeff* r23*( crossB/normB**2)
+
+        force1 = -force0 + (torch.dot(r12,r23,dim=1)/norm_r23_sq)*force0 - (torch.dot(r34,r23,dim=1)/norm_r23_sq)*force3
+
+        force2 = -force3 - (torch.dot(r12,r23,dim=1)/norm_r23_sq)*force0 + (torch.dot(r34,r23,dim=1)/norm_r23_sq)*force3
+
+    return pot, (force0, force1, force2, force3)
 
 
 def evaluate_torsion(r12, r23, r34, dih_idx, torsion_params, explicit_forces=True):

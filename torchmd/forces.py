@@ -605,16 +605,13 @@ def evaluate_angles(r21, r23, angle_params, explicit_forces=True):
 def evaluate_torsion_rna(r12,r23,r34,dih_idx,torsion_params,explicit_forces=True):
     # print(r23,'haha')
     # Calculate dihedral angles from vectors
-    crossA = torch.cross(r12, r23, dim=1)
-    crossB = torch.cross(r23, r34, dim=1)
-    crossC = torch.cross(r23, crossA, dim=1)
-    normA = torch.norm(crossA, dim=1)
-    normB = torch.norm(crossB, dim=1)
-    normC = torch.norm(crossC, dim=1)
-    normcrossB = crossB / normB.unsqueeze(1)
-    cosPhi = torch.sum(crossA * normcrossB, dim=1) / normA
-    sinPhi = torch.sum(crossC * normcrossB, dim=1) / normC
-    phi = -torch.atan2(sinPhi, cosPhi)
+    m = torch.cross(r12, -r23, dim=1)
+    n = torch.cross(-r23, r34, dim=1)
+    norm_m = torch.norm(m, dim=1)
+    norm_n = torch.norm(n, dim=1)
+    norm_r23_sq = torch.sum(r23 * r23, dim=1)
+    norm_r23 = torch.sqrt(norm_r23_sq)
+    phi = torch.atan2(norm_r23 * torch.sum(r12 * n, dim=1), torch.sum(m * n, dim=1))
    
     ntorsions = r12.shape[0]
     pot = torch.zeros(ntorsions, dtype=r12.dtype, layout=r12.layout, device=r12.device)
@@ -634,20 +631,29 @@ def evaluate_torsion_rna(r12,r23,r34,dih_idx,torsion_params,explicit_forces=True
     force0, force1, force2, force3 = None, None, None, None
     if explicit_forces:
         coeff.scatter_add_(0, dih_idx, k_phi * w * (angleDiff) * torch.exp(-0.5 * w * (angleDiff)**2))
-        norm_r23_sq = torch.norm(r23, dim =1).unsqueeze(1)**2
+        norm_r23_sq_broadcasted = norm_r23_sq.unsqueeze(1)
         
         coeff_broadcasted = coeff.unsqueeze(1)
-        normA_broadcasted = normA.unsqueeze(1)
-        normB_broadcasted = normB.unsqueeze(1)
-        r12_r23 = torch.einsum('ij, ij -> i', r12, r23).unsqueeze(1)
+        norm_m_broadcasted = norm_m.unsqueeze(1)
+        norm_n_broadcasted = norm_n.unsqueeze(1)
+        norm_r23_broadcasted = norm_r23.unsqueeze(1)
+        r12_r32 = torch.einsum('ij, ij -> i', r12, -r23).unsqueeze(1)
+        r34_r32 = torch.einsum('ij, ij -> i', r34, -r23).unsqueeze(1)
         
-        force0 = - coeff_broadcasted * r23 * (crossA/normA_broadcasted**2)
+        force0 = - coeff_broadcasted * (norm_r23_broadcasted) * (m/norm_m_broadcasted**2)
 
-        force3 = coeff_broadcasted* r23*(crossB/normB_broadcasted**2)
+        force3 = coeff_broadcasted* (norm_r23_broadcasted)*(n/norm_n_broadcasted**2)
 
-        force1 = -force0 + (r12_r23/norm_r23_sq)*force0 - (r12_r23/norm_r23_sq)*force3
+        force1 = -force0 + (r12_r32/norm_r23_sq_broadcasted)*force0 - (r34_r32/norm_r23_sq_broadcasted)*force3
         
-        force2 = -force3 - (r12_r23/norm_r23_sq)*force0 + (r12_r23/norm_r23_sq)*force3
+        force2 = -force3 - (r12_r32/norm_r23_sq_broadcasted)*force0 + (r34_r32/norm_r23_sq_broadcasted)*force3
+    
+    print('norm_m',norm_m)
+    print("force0:",force0)
+    print("force1:",force1)
+    print("force2:",force2)
+    print("force3:",force3)
+    print("phi:",phi)    
 
     return pot, (force0, force1, force2, force3)
 

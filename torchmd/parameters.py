@@ -128,6 +128,8 @@ class Parameters:
             self.angle_params = self.make_angles(mol, ff)
         if "dihedrals" in terms and len(mol.dihedrals):
             self.dihedral_params = self.make_dihedrals(mol, ff)
+        if "dihedrals_rna" in terms and len(mol.dihedrals):
+            self.dihedral_params = self.make_dihedrals(mol, ff)
         if "impropers" in terms and len(mol.impropers):
             self.improper_params = self.make_impropers(mol, ff)
         if "1-4" in terms and len(mol.dihedrals):
@@ -310,6 +312,8 @@ class Parameters:
         if "angles" in terms:
             params["angles"] = self.angle_params["params"]
         if "dihedrals" in terms:
+            params["dihedrals"] = self.dihedral_params["params"]
+        if "dihedrals_rna" in terms:
             params["dihedrals"] = self.dihedral_params["params"]
         if "impropers" in terms:
             params["impropers"] = self.improper_params["params"]

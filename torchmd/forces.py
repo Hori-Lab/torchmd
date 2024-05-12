@@ -188,9 +188,8 @@ class Forces:
                     forces[i].index_add_(0, dihed_idx[:, 1], dihedral_forces[1])
                     forces[i].index_add_(0, dihed_idx[:, 2], dihedral_forces[2])
                     forces[i].index_add_(0, dihed_idx[:, 3], dihedral_forces[3])
-            # print(self.par.dihedral_params)
+
             if "dihedrals_rna" in self.energies and self.par.dihedral_params is not None:
-                # print("hello world")
                 dihed_idx = self.par.dihedral_params["idx"]
                 param_idx = self.par.dihedral_params["map"][:, 1]
                 _, _, r12 = calculate_distances(spos, dihed_idx[:, [0, 1]], sbox)
@@ -603,7 +602,6 @@ def evaluate_angles(r21, r23, angle_params, explicit_forces=True):
     return pot, (force0, force1, force2)
 
 def evaluate_torsion_rna(r12,r23,r34,dih_idx,torsion_params,explicit_forces=True):
-    # print(r23,'haha')
     # Calculate dihedral angles from vectors
     m = torch.cross(r12, -r23, dim=1)
     n = torch.cross(-r23, r34, dim=1)
@@ -612,24 +610,20 @@ def evaluate_torsion_rna(r12,r23,r34,dih_idx,torsion_params,explicit_forces=True
     norm_r23_sq = torch.sum(r23 * r23, dim=1)
     norm_r23 = torch.sqrt(norm_r23_sq)
     phi = torch.atan2(norm_r23 * torch.sum(r12 * n, dim=1), torch.sum(m * n, dim=1))
-   
-    ntorsions = r12.shape[0]
-    pot = torch.zeros(ntorsions, dtype=r12.dtype, layout=r12.layout, device=r12.device)
-    if explicit_forces:
-        coeff = torch.zeros(
-            ntorsions, dtype=r12.dtype, layout=r12.layout, device=r12.device
-        )
         
     k_phi = torsion_params[:, 0]
     phi0 = torsion_params[:, 1]
     w = torsion_params[:, 2]
-    # print(idx,k_phi,phi0,w)
-        
+
     angleDiff = phi[dih_idx] - phi0
+
+    ntorsions = r12.shape[0]
+    pot = torch.zeros(ntorsions, dtype=r12.dtype, layout=r12.layout, device=r12.device)
     pot.scatter_add_(0, dih_idx, -k_phi * (torch.exp(-0.5 * w * (angleDiff)**2)))
 
     force0, force1, force2, force3 = None, None, None, None
     if explicit_forces:
+        coeff = torch.zeros(ntorsions, dtype=r12.dtype, layout=r12.layout, device=r12.device)
         coeff.scatter_add_(0, dih_idx, k_phi * w * (angleDiff) * torch.exp(-0.5 * w * (angleDiff)**2))
         norm_r23_sq_broadcasted = norm_r23_sq.unsqueeze(1)
         
@@ -637,23 +631,14 @@ def evaluate_torsion_rna(r12,r23,r34,dih_idx,torsion_params,explicit_forces=True
         norm_m_broadcasted = norm_m.unsqueeze(1)
         norm_n_broadcasted = norm_n.unsqueeze(1)
         norm_r23_broadcasted = norm_r23.unsqueeze(1)
-        r12_r32 = torch.einsum('ij, ij -> i', r12, -r23).unsqueeze(1)
-        r34_r32 = torch.einsum('ij, ij -> i', r34, -r23).unsqueeze(1)
+
+        r12_r32 = torch.sum(r12 * (-r23), dim=1).unsqueeze(1)
+        r34_r32 = torch.sum(r34 * (-r23), dim=1).unsqueeze(1)
         
         force0 = - coeff_broadcasted * (norm_r23_broadcasted) * (m/norm_m_broadcasted**2)
-
-        force3 = coeff_broadcasted* (norm_r23_broadcasted)*(n/norm_n_broadcasted**2)
-
+        force3 =   coeff_broadcasted * (norm_r23_broadcasted) * (n/norm_n_broadcasted**2)
         force1 = -force0 + (r12_r32/norm_r23_sq_broadcasted)*force0 - (r34_r32/norm_r23_sq_broadcasted)*force3
-        
         force2 = -force3 - (r12_r32/norm_r23_sq_broadcasted)*force0 + (r34_r32/norm_r23_sq_broadcasted)*force3
-    
-    print('norm_m',norm_m)
-    print("force0:",force0)
-    print("force1:",force1)
-    print("force2:",force2)
-    print("force3:",force3)
-    print("phi:",phi)    
 
     return pot, (force0, force1, force2, force3)
 

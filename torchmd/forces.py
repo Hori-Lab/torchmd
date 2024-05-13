@@ -148,6 +148,7 @@ class Forces:
                     forcevec = bond_unitvec * force_coeff[:, None]
                     forces[i].index_add_(0, pairs[:, 0], -forcevec)
                     forces[i].index_add_(0, pairs[:, 1], forcevec)
+                print('bond_xyz:',forcevec)
 
             if "angles" in self.energies and self.par.angle_params is not None:
                 angle_idx = self.par.angle_params["idx"]
@@ -357,13 +358,17 @@ class Forces:
                         forcevec = nb_unitvec * force_coeff[:, None]
                         forces[i].index_add_(0, ava_idx[:, 0], -forcevec)
                         forces[i].index_add_(0, ava_idx[:, 1], forcevec)
-
+                        import sys
+                        torch.set_printoptions(threshold=sys.maxsize)
+                        print('repulsion_xyz:',forcevec)
+                        print('ava_idx',ava_idx)
         if self.external:
             ext_ene, ext_force = self.external.calculate(pos, box)
             for s in range(nsystems):
                 pot[s]["external"] += ext_ene[s]
             if explicit_forces:
                 forces += ext_force
+            print('external:',forces)
 
         if not explicit_forces and calculateForces:
             enesum = torch.zeros(1, device=pos.device, dtype=pos.dtype)
@@ -510,6 +515,7 @@ def evaluate_repulsion_RNA(
     if explicit_forces:
         force = (-12 * aa * rinv12 * rinv1 + 12 * bb * rinv6 * rinv1) / scale
         force = torch.where(sig < dist, 0., force)
+    print('repulsion:',force)
 
     return pot, force
 
@@ -563,6 +569,7 @@ def evaluate_bonds(dist, bond_params, explicit_forces=True):
     pot = k0 * (x**2)
     if explicit_forces:
         force = 2 * k0 * x
+    print('bond:',force)
     return pot, force
 
 

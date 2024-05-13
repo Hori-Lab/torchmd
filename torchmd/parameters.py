@@ -470,8 +470,8 @@ def calculate_ABS(sigma, epsilon):
     sigma_table = 0.5 * (sigma + sigma[:, None])
     eps_table = torch.sqrt(epsilon * epsilon[:, None])
     sigma_table_6 = sigma_table**6
-    B = eps_table * 4 * sigma_table_6
-    A = eps_table * 4 * sigma_table_6 * sigma_table_6
+    B = eps_table * sigma_table_6
+    A = eps_table * sigma_table_6 * sigma_table_6
     #del eps_table, sigma_table_6
     return A, B, sigma_table
 
